@@ -1,5 +1,5 @@
 # London Recycling rate 
-For R
-
+Simple R file for 
 Household Waste Recycling Rates, Borough
+
 https://data.london.gov.uk/dataset/household-waste-recycling-rates-borough
