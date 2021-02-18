@@ -1,0 +1,199 @@
+---
+title: "Recycle Rate 2"
+author: "Liu Zhang"
+date: "11/02/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+The file contains recycling rate in England, particular at London borough level, from the period of 2003-2018. We will have a look how those rates has changed.
+
+
+```{r message=FALSE}
+## load package
+library(tidyverse)
+library(tidymodels)
+```
+
+We will read the csv file from London Datastore.
+
+```{r message = F}
+dataset <- read_csv("https://data.london.gov.uk/download/household-waste-recycling-rates-borough/15ddc38a-0a37-4f69-98b5-e69e549b39d3/Household%20recycling.csv")
+```
+
+There are three locality level in the file, London borough, england region, england overll. We will create a new variable to indicate it, so it will become easier to filter later.
+
+```{r}
+dataset1 <- dataset %>% 
+  mutate(location_level = case_when(
+    str_starts(string = Code, pattern = "^E09") ~ "London_borough",
+    str_starts(string = Code, pattern = "^E12") ~ "England_region",
+    str_starts(string = Code, pattern = "^E92") ~ "England_overall"
+  ))
+```
+
+The `Year` factor is still in character, we will separate it and use the starting part as the year.
+
+```{r}
+dataset2 <- dataset1 %>% 
+  mutate(Year = str_sub(string = Year, start = 1, end = 4)) %>% 
+  mutate(Year = as.numeric(Year))
+```
+
+Let's do a quick plot to see what will we expect to see for the trend.
+
+```{r}
+dataset2 %>% 
+  filter(Area == "London" | Area == "England") %>% 
+  ggplot(aes(x = Year, y = Recycling_Rates, colour = Area)) +
+  geom_line()
+```
+
+From the plot we can see there is an approximate linear increase until 2010, then the recycling rates leveled off. London is performing worse than the England average.
+
+We will explore further about individual London borough, see if the trend holds for each.
+
+```{r}
+dataset2 %>% 
+  filter(location_level == "London_borough") %>% 
+  ggplot(aes(x = Year, y = Recycling_Rates, colour = Area)) +
+  geom_line() + facet_wrap(~Area) + theme(legend.position = "none")
+```
+
+From the plot, we can see linear regression seems to be quite good approximate. Various borough has different rate of recycling rate as the slope do differ. 
+
+```{r}
+## group by borough
+london_nest <- dataset2 %>% 
+  filter(location_level == "London_borough") %>% 
+  group_by(Area) %>% 
+  nest()
+
+## apply linear regression
+london_model <- london_nest %>% 
+  mutate(model = map(data, ~lm(Recycling_Rates ~ Year, data = .x))) %>% 
+  ## extract model information
+  mutate(tidied = map(model, ~tidy(.x)), 
+         glanced = map(model, ~glance(.x)),
+         augmented = map(model, ~augment(.x)))
+```
+
+First we need to check how good is out model fit, we will use R-square as the measure
+
+```{r}
+london_model %>% 
+  unnest(glanced) %>% 
+  arrange(r.squared) %>% 
+  ggplot(aes(x = r.squared)) + 
+    geom_histogram(binwidth = 0.1) + 
+    geom_vline(aes(xintercept = median(r.squared), col = "red")) + ## add a median reference line
+    theme(legend.position = "none")
+
+```
+Some of the linear regression line is really bad fit, let's see which boroghs are they.
+
+```{r}
+london_model_low_r2 <- london_model %>% 
+  unnest(glanced) %>%
+  arrange(r.squared) %>% 
+  mutate(Area = fct_reorder(Area, r.squared)) ## sort by r.squared for future plot 
+
+## let's check the p-value >0.05
+london_model_low_r2 %>% 
+  filter(p.value >= 0.05) %>% 
+  unnest(data) %>% 
+  ggplot(aes(x = Year, y = Recycling_Rates, colour = Area)) +
+    geom_line() +
+    facet_wrap( ~ Area) +
+    theme(legend.position = "none") 
+```
+We see the non-linear behavior due to the dip after 2010, as noted before on London average, the trend appear to be flat after 2010, hence those borough are ones lower the average recycling rate in the city.
+
+Similarly we can check the boroughs with good fit to the linear model.
+
+```{r}
+## let's check the p-value >0.05
+london_model_low_r2 %>% 
+  filter(r.squared >= 0.75) %>% 
+  unnest(data) %>% 
+  ggplot(aes(x = Year, y = Recycling_Rates, colour = Area)) +
+    geom_line() +
+    facet_wrap( ~ Area) +
+    theme(legend.position = "none") 
+```
+
+We notice much smaller impact at 2010, with the boroughs easily recovered and continue increase their recycling rate.
+
+To have a better perspective, let's plot the absolute change from 2003 to 2018.
+
+```{r message= F}
+## get 3 point reference year
+london_3pt <- london_nest %>% 
+  unnest(data) %>% 
+  filter(Year %in% c(2003, 2010, 2018)) %>% 
+  select(-c(Code, location_level)) %>% 
+  group_by(Area) %>% 
+  mutate(range = Recycling_Rates - lag(Recycling_Rates, 2)) %>% 
+  fill(range, .direction = "up")
+
+## get 2018 London overall average
+london_2018 <- dataset2 %>% 
+  filter(Area == "London", Year == 2018) %>% 
+  pull(Recycling_Rates)
+
+## calculate absolute increase between 2003 and 2017
+london_3pt %>% 
+  ggplot(aes(x = Recycling_Rates, y = fct_reorder2(Area, Year, -Recycling_Rates))) +
+  geom_line() +
+  geom_point(aes(colour = as.factor(Year)), size = 3) +
+  geom_vline(xintercept = london_2018, linetype = "dashed", color = "blue", size = 1) +
+  ggtitle("London Borough recycling rate by year (2003-2018)") +
+  xlab("Recycling Rate (%)") +
+  ylab("London Borough") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+```
+
+We notice the boroughs with high recycling rate to start up with has higher rate in 2018, though the effect is not strong. The plot is sorted by 2018 rate, and some boroughs has noticeable dip from their 2010 rate, such as Harrow and City of London. The overall change of the recycling rate over the period is `r paste(round(mean(london_3pt$range, rm.na = T),2), "%", sep = "")`
+
+Let's also check at England level for comparison.
+
+```{r}
+region <- dataset2 %>% 
+  filter(location_level == "England_region") 
+
+## line plot
+region %>% 
+  ggplot(aes(x = Year, y = Recycling_Rates, colour = Area)) +
+  geom_line()
+```
+
+All regions in England behave similarly, a period of linear growth then plateaued after 2010. It is disappointing to see the regions are achieving a higher level in recycling rate.
+
+```{r message= F}
+## get 3 point reference year
+region_3pt <- region %>% 
+  filter(Year %in% c(2003, 2010, 2018)) %>% 
+  select(-c(Code, location_level)) 
+
+## get 2018 London overall average
+england_2018 <- dataset2 %>% 
+  filter(Area == "England", Year == 2018) %>% 
+  pull(Recycling_Rates)
+
+## calculate absolute increase between 2003 and 2017
+region_3pt %>% 
+  ggplot(aes(x = Recycling_Rates, y = fct_reorder2(Area, Year, -Recycling_Rates))) +
+  geom_line() +
+  geom_point(aes(colour = as.factor(Year)), size = 3) +
+  geom_vline(xintercept = england_2018, linetype = "dashed", color = "blue", size = 1) +
+  ggtitle("England region recycling rate by year (2003-2018)") +
+  xlab("Recycling Rate (%)") +
+  ylab("Region") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+```
+
+We see London is the worst in England for it's recycling rate. There are only a handful of London borough pass the 40% mark just to be close to England average, a substantial amount of work need to be done to reach the target of 50% recycling rate by 2030.
+
